@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CRATE=<crate> (default amr-nb): which codec (lc3: vs liblc3's distribution and strict builds). Build its benchmark once and run it pinned to one core (less noise on laptops).
+# CRATE=<crate> (default the first codec present): which codec (lc3: vs liblc3's distribution and strict builds). Build its benchmark once and run it pinned to one core (less noise on laptops).
 # BENCH=kern: ns per call of the hot encoder kernels, Rust vs C (an ignored lib test).
 # AB=<git ref>: that ref (A) vs the working tree (B; B=<git ref>: that ref instead, e.g. two
 # `git stash create` snapshots of consecutive steps), 3 runs per side in the order A B, B A, A B,
@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # the first codec crate present (a product export has a subset)
 first_codec() { for c in amr-nb amr-wb lc3; do [ -d crates/$c ] && { echo $c; return; }; done; }
-crate=${CRATE:-$(first_codec)}  # CRATE=amr-wb: the other codec
+crate=${CRATE:-$(first_codec)}  # CRATE=<codec>: another one present
 # BENCH=all: every codec × side, its "all" line only: a sweep's before/after (run on each tree).
 if [ "${BENCH:-}" = all ]; then
     [ -z "${AB:-}" ] || { echo "bench: BENCH=all doesn't take AB= (run it on each tree)" >&2; exit 1; }

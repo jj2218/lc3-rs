@@ -4,7 +4,7 @@
 # performance core on hybrid CPUs); each sample's inline chain (addr2line -i, debug info) is
 # charged to its innermost codec function outside basic_op, so code inlined into the AVX2
 # copies and Decoder::decode still ranks as its own function (operators count to their caller).
-# CRATE= (amr-nb), BENCH=dec|enc (enc; all: both codecs × sides), BENCH_MODE=<mode>, TOP= (10),
+# CRATE= (the first codec present), BENCH=dec|enc (enc; all: both codecs × sides), BENCH_MODE=<mode>, TOP= (10),
 # PERF_REPS= (3); C=1 (lc3): also liblc3's distribution build ranked, per stage against the Rust;
 # FN=<name substring>: that function's cost per source line instead (inlined
 # callees' lines included). Two builds: runtime AVX2 dispatch and portable (--cfg portable).

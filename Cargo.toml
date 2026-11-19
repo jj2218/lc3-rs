@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-# The oldest Rust that builds amr-nb (let-chains, `as_chunks`), checked by `just msrv`.
+# The oldest Rust that builds every codec crate (AMR-NB's let-chains, `as_chunks`), checked by `just msrv`.
 rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/jj2218/lc3-rs"
@@ -16,7 +16,7 @@ missing_docs = "warn"
 # Every public type: `Debug` (API guideline C-DEBUG), so a user's `#[derive(Debug)]` compiles.
 missing_debug_implementations = "warn"
 # `--cfg portable` compiles out every crate's AVX2 dispatch (`src/simd.rs`);
-# `--cfg amr_nb_arrays` runs the SSE2 kernels' array forms (the non-x86 bodies) on x86; `just test`.
+# `--cfg amr_nb_arrays` (AMR-NB) runs its SSE2 kernels' array forms (the non-x86 bodies) on x86; `just test`.
 # `--cfg codec_stages`: each codec's stage timers (`BENCH=stages just bench`).
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(portable)", "cfg(amr_nb_arrays)", "cfg(codec_stages)"] }
 

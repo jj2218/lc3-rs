@@ -22,7 +22,7 @@ const SRC: &[&str] = &[
 ];
 
 /// The gitignored `.cache/` of this checkout, or of the main checkout when building in a
-/// `git worktree` (as `opencore-sys`).
+/// `git worktree`.
 fn cache_dir() -> PathBuf {
     let ws = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     if ws.join(".cache/liblc3").exists() {
