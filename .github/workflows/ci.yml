@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# What builds without the downloaded oracle and test items (guard, format, the library on
+# x86-64 and aarch64 and at its minimum Rust version, docs, the package). The tests against
+# liblc3 and the conformance items run locally: `just check`.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Installs the toolchain, components and targets pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: extractions/setup-just@v4
+      - run: just rules fmt-check msrv
+      - run: cargo clippy -p lc3 --lib --locked -- -D warnings
+      - run: RUSTFLAGS="--cfg portable" cargo clippy -p lc3 --lib --locked -- -D warnings
+      - run: cargo clippy -p lc3 --lib --locked --target aarch64-unknown-linux-gnu -- -D warnings
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc -p lc3 --no-deps --locked
+      - run: cargo package -p lc3 --locked

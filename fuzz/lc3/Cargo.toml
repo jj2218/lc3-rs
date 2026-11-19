@@ -1,0 +1,32 @@
+[package]
+name = "lc3-fuzz"
+version = "0.0.0"
+description = "cargo-fuzz targets for lc3 (nightly, `just fuzz` only; not part of the stable workspace)"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lc3 = { path = "../../crates/lc3" }
+liblc3-sys = { path = "../../crates/liblc3-sys" }
+
+# Its own workspace: kept out of the stable one (`just check`, CI).
+[workspace]
+
+[[bin]]
+name = "lc3_decode_vs_c"
+path = "fuzz_targets/lc3_decode_vs_c.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lc3_encode_vs_c"
+path = "fuzz_targets/lc3_encode_vs_c.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,23 @@
+[package]
+name = "lc3"
+version = "0.1.0"
+description = "Pure-Rust LC3 (Bluetooth LE Audio) codec: encoder, decoder, packet loss concealment; bit-exact with liblc3"
+keywords = ["lc3", "bluetooth", "le-audio", "codec", "audio"]
+categories = ["multimedia::audio", "multimedia::encoding", "encoding"]
+readme = "README.md"
+# The tests and benches need the C oracle and test items (dev-only path crates): not packaged.
+exclude = ["tests/", "benches/"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+liblc3-sys = { path = "../liblc3-sys" }
+
+[[bench]]
+name = "codec"
+harness = false
