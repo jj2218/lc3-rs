@@ -6,7 +6,6 @@ use crate::attdet::{self, AttDet};
 use crate::bits::Writer;
 use crate::bwdet;
 use crate::common::{MAX_NS, nd, ns};
-use crate::decoder::{Error, MAX_FRAME_BYTES, MIN_FRAME_BYTES, resolve_dt, resolve_srate};
 use crate::energy;
 use crate::fastmath::ldexpf;
 use crate::ltpf::{self, LtpfAnalysis, LtpfData};
@@ -15,6 +14,7 @@ use crate::sns::{self, SnsData};
 use crate::spec::{self, SpecAnalysis, SpecSide};
 use crate::tables::LC3_NS_2M5;
 use crate::tns::{self, TnsData};
+use crate::{Error, check_frame, check_pcm, debug_config, setup};
 
 /// `struct side_data` of `lc3.c`, encoder side.
 #[derive(Clone, Copy, Debug)]
@@ -33,7 +33,7 @@ fn nt(sr: usize) -> usize {
 }
 
 /// An LC3 encoder for one channel (`struct lc3_encoder`).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Encoder {
     dt: usize,
     sr: usize,
@@ -49,16 +49,15 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    /// An encoder for frames of `frame_us` (2500, 5000, 7500 or 10000) coded at `sample_rate`
-    /// (8000, 16000, 24000, 32000 or 48000 Hz), from PCM at `pcm_rate` (≥ `sample_rate`, from
-    /// the same list; liblc3's `lc3_setup_encoder`).
+    /// An encoder for frames of `frame_us` µs (2500, 5000, 7500 or 10000) coded at
+    /// `sample_rate` Hz (8000, 16000, 24000, 32000 or 48000), from PCM at `pcm_rate` Hz
+    /// (≥ `sample_rate`, from the same list; liblc3's `lc3_setup_encoder`).
+    ///
+    /// # Errors
+    /// [`Error::InvalidFrameDuration`], [`Error::InvalidSampleRate`] or
+    /// [`Error::PcmRateBelowSampleRate`].
     pub fn new(frame_us: u32, sample_rate: u32, pcm_rate: u32) -> Result<Self, Error> {
-        let dt = resolve_dt(frame_us).ok_or(Error::Config)?;
-        let sr = resolve_srate(sample_rate).ok_or(Error::Config)?;
-        let sr_pcm = resolve_srate(pcm_rate).ok_or(Error::Config)?;
-        if sr > sr_pcm {
-            return Err(Error::Config);
-        }
+        let (dt, sr, sr_pcm) = setup(frame_us, sample_rate, pcm_rate)?;
         let ns = ns(dt, sr_pcm);
         Ok(Encoder {
             dt,
@@ -74,17 +73,23 @@ impl Encoder {
     }
 
     /// PCM samples per frame.
+    #[must_use]
     pub fn frame_samples(&self) -> usize {
         ns(self.dt, self.sr_pcm)
     }
 
     /// Encodes `frame_samples()` 16-bit samples (liblc3's `LC3_PCM_FORMAT_S16`) into a frame
-    /// of `out.len()` bytes (20 to 400); samples past `frame_samples()` are ignored.
+    /// of `out.len()` bytes ([`MIN_FRAME_BYTES`] to [`MAX_FRAME_BYTES`]); samples past
+    /// `frame_samples()` are ignored.
     ///
-    /// # Panics
-    /// If `pcm` is shorter than `frame_samples()`.
+    /// # Errors
+    /// [`Error::FrameSize`] or [`Error::PcmLength`]; the encoder is then unchanged.
+    ///
+    /// [`MIN_FRAME_BYTES`]: crate::MIN_FRAME_BYTES
+    /// [`MAX_FRAME_BYTES`]: crate::MAX_FRAME_BYTES
     pub fn encode(&mut self, pcm: &[i16], out: &mut [u8]) -> Result<(), Error> {
-        check(out)?;
+        check_frame(out.len())?;
+        check_pcm(pcm.len(), self.frame_samples())?;
         let (nt, ns) = (nt(self.sr_pcm), self.frame_samples());
         for (i, &v) in pcm[..ns].iter().enumerate() {
             self.xt[nt + i] = v;
@@ -95,14 +100,19 @@ impl Encoder {
     }
 
     /// Encodes `frame_samples()` float samples in [-1, 1] (liblc3's `LC3_PCM_FORMAT_FLOAT`)
-    /// into a frame of `out.len()` bytes (20 to 400); samples past `frame_samples()` are
-    /// ignored. Beyond [-1, 1] the analysis saturates as liblc3's does, up to magnitude 65536;
-    /// from there (and for NaN) liblc3's float-to-int cast is undefined, and the frames may differ.
+    /// into a frame of `out.len()` bytes ([`MIN_FRAME_BYTES`] to [`MAX_FRAME_BYTES`]); samples
+    /// past `frame_samples()` are ignored. Beyond [-1, 1] the analysis saturates as liblc3's
+    /// does, up to magnitude 65536; from there (and for NaN) liblc3's float-to-int cast is
+    /// undefined, and the frames may differ (any float input encodes, without panicking).
     ///
-    /// # Panics
-    /// If `pcm` is shorter than `frame_samples()`.
+    /// # Errors
+    /// [`Error::FrameSize`] or [`Error::PcmLength`]; the encoder is then unchanged.
+    ///
+    /// [`MIN_FRAME_BYTES`]: crate::MIN_FRAME_BYTES
+    /// [`MAX_FRAME_BYTES`]: crate::MAX_FRAME_BYTES
     pub fn encode_f32(&mut self, pcm: &[f32], out: &mut [u8]) -> Result<(), Error> {
-        check(out)?;
+        check_frame(out.len())?;
+        check_pcm(pcm.len(), self.frame_samples())?;
         let (nt, ns) = (nt(self.sr_pcm), self.frame_samples());
         for (i, &v) in pcm[..ns].iter().enumerate() {
             self.xs[i] = ldexpf(v, 15);
@@ -171,11 +181,8 @@ impl Encoder {
     }
 }
 
-/// The frame-size check of `lc3_encode`.
-fn check(out: &[u8]) -> Result<(), Error> {
-    if (MIN_FRAME_BYTES..=MAX_FRAME_BYTES).contains(&out.len()) {
-        Ok(())
-    } else {
-        Err(Error::FrameSize)
+impl std::fmt::Debug for Encoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_config(f, "Encoder", (self.dt, self.sr, self.sr_pcm))
     }
 }

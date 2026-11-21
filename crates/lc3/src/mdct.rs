@@ -9,7 +9,7 @@ use crate::common::{MAX_NS, nd, ns};
 use crate::tables::{LC3_FFT_TWIDDLES_BF2, LC3_FFT_TWIDDLES_BF3, LC3_MDCT_ROT, LC3_MDCT_WIN};
 
 /// `struct lc3_complex`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Complex {
     pub re: f32,
     pub im: f32,
@@ -454,7 +454,9 @@ pub(crate) fn mdct_inverse(
     imdct_window(dt, sr, &u, d, y);
 }
 
-#[cfg(test)]
+// The C oracle is a dev-only path crate, absent from the published `.crate`: `cfg(oracle)`, set
+// by scripts/test.sh, keeps `cargo test` from the `.crate` compiling (scripts/package-test.sh).
+#[cfg(all(test, oracle))]
 #[allow(unsafe_code)]
 mod vs_c {
     use super::*;
@@ -465,7 +467,7 @@ mod vs_c {
     fn configs() -> Vec<(usize, usize, usize)> {
         let mut v = Vec::new();
         for (dt, wins) in LC3_MDCT_WIN.iter().enumerate() {
-            for (sr, w) in wins.iter().enumerate() {
+            for (sr, w) in wins.iter().enumerate().take(5) {
                 if w.is_some() {
                     v.extend((0..=sr).map(|sr2| (dt, sr, sr2)));
                 }

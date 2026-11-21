@@ -4,11 +4,28 @@
 /// `struct lc3_ac_model`: 17 symbols, `[low, range]` each.
 pub(crate) type AcModel = [[u16; 2]; 17];
 
+/// Each model's lows `[1..17]` as i16 (all ≤ 1024), for [`Bits::get_symbol_q`].
+#[cfg(any(target_arch = "x86_64", test))]
+pub(crate) const fn model_lows<const N: usize>(m: &[AcModel; N]) -> [[i16; 16]; N] {
+    let mut o = [[0i16; 16]; N];
+    let mut i = 0;
+    while i < N {
+        let mut k = 0;
+        while k < 16 {
+            o[i][k] = m[i][k + 1][0] as i16;
+            k += 1;
+        }
+        i += 1;
+    }
+    o
+}
+
 /// `LC3_ACCU_BITS`.
 const ACCU_BITS: i32 = 32;
 
 /// `lc3_bits_t` in `LC3_BITS_MODE_READ`.
 #[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub(crate) struct Bits<'a> {
     buf: &'a [u8],
     /// Arithmetic decoder: `low`, `range`, sticky `error`.
@@ -121,6 +138,34 @@ impl<'a> Bits<'a> {
             s -= usize::from(self.low < low(s));
         }
         self.low -= low(s);
+        self.range = range * u32::from(model[s][1]);
+        if self.range < 0x10000 {
+            self.ac_read_renorm();
+        }
+        s as u32
+    }
+
+    /// [`Bits::get_symbol`] by quotient: for integers (range > 0) `low ≥ range · L` ⇔
+    /// `low / range ≥ L`, so the symbol is the number of `lows` (`model[1..17][0]`, increasing)
+    /// at or below the quotient: one division and 16 lane compares instead of a serial chain of
+    /// multiply-compare-branch steps (decoder −5…8% cycles on x86-64; LLVM keeps it scalar on
+    /// aarch64, so used on x86-64 only). The same symbol, so the same state.
+    #[cfg(any(target_arch = "x86_64", test))]
+    #[inline(always)]
+    pub(crate) fn get_symbol_q(&mut self, model: &AcModel, lows: &[i16; 16]) -> u32 {
+        let range = (self.range >> 10) & 0xffff;
+        self.error |= self.low >= (range << 10);
+        if self.error {
+            self.low = 0;
+        }
+        // < 1024 here (low < range << 10), so it fits the i16 lanes
+        let q = (self.low / range) as i16;
+        let above = lows
+            .iter()
+            .enumerate()
+            .fold(1u32 << 16, |m, (i, &l)| m | (u32::from(l > q) << i));
+        let s = above.trailing_zeros() as usize;
+        self.low -= range * u32::from(model[s][0]);
         self.range = range * u32::from(model[s][1]);
         if self.range < 0x10000 {
             self.ac_read_renorm();
@@ -331,6 +376,40 @@ impl<'a> Writer<'a> {
         while self.range < 0x10000 {
             self.ac_shift();
             self.range <<= 8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Bits, model_lows};
+    use crate::tables::LC3_SPECTRUM_MODELS;
+    use crate::testutil::Rng;
+
+    /// The quotient search decodes the same symbol, with the same state after it, as the C's
+    /// search: every spectrum model, symbol chains through random (and all-0x00/0xff) frames,
+    /// errors included.
+    #[test]
+    fn get_symbol_q_is_get_symbol() {
+        let lows = model_lows(&LC3_SPECTRUM_MODELS);
+        let mut r = Rng::new(0x5ea7c);
+        for t in 0..3000 {
+            let len = 20 + (r.u64() % 381) as usize;
+            let buf: Vec<u8> = match t % 10 {
+                0 => vec![0; len],
+                1 => vec![0xff; len],
+                _ => (0..len).map(|_| r.u64() as u8).collect(),
+            };
+            let (mut a, mut b) = (Bits::new(&buf), Bits::new(&buf));
+            for i in 0..400 {
+                let m = (r.u64() % 64) as usize;
+                let (x, y) = (
+                    a.get_symbol(&LC3_SPECTRUM_MODELS[m]),
+                    b.get_symbol_q(&LC3_SPECTRUM_MODELS[m], &lows[m]),
+                );
+                assert_eq!(x, y, "frame {t} symbol {i} model {m}");
+                assert!(a == b, "frame {t} symbol {i}");
+            }
         }
     }
 }

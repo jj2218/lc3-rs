@@ -3,7 +3,7 @@
 use crate::common::ne;
 
 /// `lc3_plc_state_t`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct PlcState {
     pub seed: u16,
     pub count: i32,
@@ -43,6 +43,6 @@ impl PlcState {
         }
         self.seed = seed;
         self.alpha = alpha;
-        self.count += 1;
+        self.count = self.count.saturating_add(1); // past 2^31 lost frames: alpha is 0 long before
     }
 }

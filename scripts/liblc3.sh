@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Fetch liblc3 1.1.3 (Google, Apache-2.0) into the gitignored .cache/liblc3/: the C oracle for
-# the LC3 port's differential tests and its speed baseline. SHA-256 pinned; the tarball's
-# embedded commit id (`git get-tar-commit-id`) cross-checked against the v1.1.3 tag's commit
-# (96a3af0b…; Debian repacks it as +dfsg, Arch builds from the tag). Idempotent.
+# the LC3 port's differential tests and its speed baseline. SHA-256 pinned (when the pin was
+# made, the tarball's embedded commit id, `git get-tar-commit-id`, was checked by hand against
+# the v1.1.3 tag's commit 96a3af0b…; Debian repacks it as +dfsg, Arch builds from the tag).
+# Idempotent.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

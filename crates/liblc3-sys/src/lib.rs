@@ -5,6 +5,9 @@
 
 use std::ffi::c_void;
 
+/// The workbench's `.cache/` (the main checkout's from a git worktree): the downloads.
+pub const CACHE_DIR: &str = env!("LIBLC3_SYS_CACHE_DIR");
+
 /// `enum lc3_pcm_format`.
 pub const LC3_PCM_FORMAT_S16: i32 = 0;
 pub const LC3_PCM_FORMAT_FLOAT: i32 = 3;

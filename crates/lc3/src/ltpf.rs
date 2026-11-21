@@ -14,14 +14,14 @@ use crate::tables::{
 const MAX_FILTER_WIDTH: usize = 12;
 
 /// `lc3_ltpf_data_t`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LtpfData {
     pub active: bool,
     pub pitch_index: i32,
 }
 
 /// `lc3_ltpf_synthesis_t`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LtpfSynthesis {
     pub active: bool,
     pub pitch: i32,
@@ -77,7 +77,6 @@ impl LtpfAnalysis {
 
     /// `resample_x64k_12k8` (`f` = 5, `p` 8, 4, 2) and `resample_x192k_12k8` (`f` = 15,
     /// `p` 8, 4): `n` samples at 12.8 kHz into `y` from `x[xt..]` (Q15, `w - 1` previous).
-    #[allow(clippy::too_many_arguments)]
     fn resample(&mut self, f: usize, p: usize, h: &[i16], x: &[i16], xt: usize, y: &mut [i16]) {
         let w = 2 * (8 * f / p);
         let base = xt + 1 - w;
@@ -94,14 +93,17 @@ impl LtpfAnalysis {
 
 /// Σ x[k]·h[k], wrapping i32 (the C's `int32_t` sum; wrapping sums are exact in any order).
 fn dot_wrap(x: &[i16], h: &[i16]) -> i32 {
-    #[cfg(all(target_arch = "x86_64", not(portable)))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(portable)))]
     return crate::simd::dot_wrap(x, h);
-    #[cfg(not(all(target_arch = "x86_64", not(portable))))]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2", not(portable))))]
     dot_wrap_portable(x, h)
 }
 
 /// `dot_wrap`'s contract (the C's loop).
-#[cfg_attr(all(target_arch = "x86_64", not(portable)), allow(dead_code))]
+#[cfg_attr(
+    all(target_arch = "x86_64", target_feature = "sse2", not(portable)),
+    allow(dead_code)
+)]
 pub(crate) fn dot_wrap_portable(x: &[i16], h: &[i16]) -> i32 {
     let mut un = 0i32;
     for (&a, &b) in x.iter().zip(h) {
@@ -126,7 +128,7 @@ fn resample_6k4(x: &[i16], b: usize, y: &mut [i16]) {
 /// summed apart in 32-bit lanes (< 2^16 per term: they fit i32 for n ≤ 2^11), the 64-bit
 /// total only at the end: lanes SSE2 has (no cheap 64-bit ones).
 fn dot(a: &[i16], b: &[i16], n: usize) -> f32 {
-    #[cfg(all(target_arch = "x86_64", not(portable)))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(portable)))]
     if n.is_multiple_of(16) {
         return ((crate::simd::dot16(&a[..n], &b[..n]) + (1 << 5)) >> 6) as i32 as f32;
     }
@@ -387,31 +389,9 @@ pub(crate) fn get_data(bits: &mut Bits) -> LtpfData {
 }
 
 /// `synthesize_template`: filters `n` samples at `xh[x..]` in place (`xh`: the ring of `nh`
-/// samples), `x0` the `w - 1` previous inputs, `c` the `w` den then `w` num coefficients,
-/// `fade` -1 out, 1 in, 0 none.
-#[allow(clippy::too_many_arguments)]
-fn synthesize_template(
-    xh: &mut [f32],
-    nh: usize,
-    lag: usize,
-    x0: &[f32],
-    x: usize,
-    n: usize,
-    c: &[f32],
-    w: usize,
-    fade: i32,
-) {
-    // per width, as the C's `synthesize_4/6/8/12`: the ring indices `% w` become constants
-    match w {
-        4 => synthesize_w::<4>(xh, nh, lag, x0, x, n, c, fade),
-        6 => synthesize_w::<6>(xh, nh, lag, x0, x, n, c, fade),
-        8 => synthesize_w::<8>(xh, nh, lag, x0, x, n, c, fade),
-        12 => synthesize_w::<12>(xh, nh, lag, x0, x, n, c, fade),
-        _ => unreachable!("LTPF filter width {w}"),
-    }
-}
-
-/// `synthesize_template` for width `W`.
+/// samples), `x0` the `W - 1` previous inputs, `c` the `W` den then `W` num coefficients,
+/// `fade` -1 out, 1 in, 0 none; per width, as the C's `synthesize_4/6/8/12` (the ring indices
+/// `% W` become constants).
 #[allow(clippy::too_many_arguments)]
 fn synthesize_w<const W: usize>(
     xh: &mut [f32],
@@ -521,25 +501,32 @@ pub(crate) fn synthesize(
         x0[1][..w - 1].copy_from_slice(&xh[x + nt - (w - 1)..x + nt]);
     }
 
+    let filter = match w {
+        4 => synthesize_w::<4>,
+        6 => synthesize_w::<6>,
+        8 => synthesize_w::<8>,
+        12 => synthesize_w::<12>,
+        _ => unreachable!("LTPF filter width {w}"),
+    };
     let lag = (pitch / 4) as usize;
     let old_lag = (ltpf.pitch / 4) as usize;
     if !ltpf.active && active {
-        synthesize_template(xh, nh, lag, &x0[0], x, nt, &c, w, 1);
+        filter(xh, nh, lag, &x0[0], x, nt, &c, 1);
     } else if ltpf.active && !active {
-        synthesize_template(xh, nh, old_lag, &x0[0], x, nt, &ltpf.c, w, -1);
+        filter(xh, nh, old_lag, &x0[0], x, nt, &ltpf.c, -1);
     } else if ltpf.active && active && ltpf.pitch == pitch {
-        synthesize_template(xh, nh, lag, &x0[0], x, nt, &c, w, 0);
+        filter(xh, nh, lag, &x0[0], x, nt, &c, 0);
     } else if ltpf.active && active {
-        synthesize_template(xh, nh, old_lag, &x0[0], x, nt, &ltpf.c, w, -1);
+        filter(xh, nh, old_lag, &x0[0], x, nt, &ltpf.c, -1);
         // the w - 1 samples before x in the ring, as just filtered
         let s = if x == 0 { nh } else { x } - (w - 1);
         let mut x1 = [0f32; MAX_FILTER_WIDTH];
         x1[..w - 1].copy_from_slice(&xh[s..s + w - 1]);
-        synthesize_template(xh, nh, lag, &x1, x, nt, &c, w, 1);
+        filter(xh, nh, lag, &x1, x, nt, &c, 1);
     }
 
     if active && ns > nt {
-        synthesize_template(xh, nh, lag, &x0[1], x + nt, ns - nt, &c, w, 0);
+        filter(xh, nh, lag, &x0[1], x + nt, ns - nt, &c, 0);
     }
 
     ltpf.active = active;
@@ -580,6 +567,18 @@ mod tests {
             });
             assert_eq!(super::dot_wrap(&a, &b), wrap, "n {n}");
             assert_eq!(super::dot_wrap_portable(&a, &b), wrap, "n {n}");
+        }
+        // the lane sums' headroom at the kernels' bound (n = 2^11), every extreme pairing
+        for (x, y) in [
+            (i16::MIN, i16::MIN),
+            (i16::MIN, i16::MAX),
+            (i16::MAX, i16::MAX),
+        ] {
+            let n = 2048;
+            let (a, b) = (vec![x; n], vec![y; n]);
+            let v = n as i64 * i64::from(x) * i64::from(y);
+            assert_eq!(dot(&a, &b, n), ((v + 32) >> 6) as i32 as f32, "{x} {y}");
+            assert_eq!(super::dot_wrap(&a, &b), v as i32, "{x} {y}");
         }
     }
 }

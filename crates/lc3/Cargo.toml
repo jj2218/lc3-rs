@@ -1,6 +1,6 @@
 [package]
 name = "lc3"
-version = "0.1.0"
+version = "0.2.0"
 description = "Pure-Rust LC3 (Bluetooth LE Audio) codec: encoder, decoder, packet loss concealment; bit-exact with liblc3"
 keywords = ["lc3", "bluetooth", "le-audio", "codec", "audio"]
 categories = ["multimedia::audio", "multimedia::encoding", "encoding"]

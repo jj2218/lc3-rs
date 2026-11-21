@@ -8,14 +8,15 @@
 # PERF_REPS= (3); C=1 (lc3): also liblc3's distribution build ranked, per stage against the Rust;
 # FN=<name substring>: that function's cost per source line instead (inlined
 # callees' lines included). Two builds: runtime AVX2 dispatch and portable (--cfg portable).
-# The header gives the Rust codec's share of the samples (the C baseline runs in the same binary).
+# The header gives the Rust codec's share of the samples (the C baseline runs in the same binary);
+# a last line the shared libraries' share (libm, libc: setup's exp/atan, malloc), uncharged.
 # Detail: perf report -i target/perf.data (the last run); perf annotate -i target/perf.data <sym>.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # the first codec crate present (a product export has a subset)
-first_codec() { for c in amr-nb amr-wb lc3; do [ -d crates/$c ] && { echo $c; return; }; done; }
+first_codec() { for c in amr-nb amr-wb lc3 vorbis-enc; do [ -d crates/$c ] && { echo $c; return; }; done; }
 if [ "${BENCH:-}" = all ]; then
-    for c in amr-nb amr-wb lc3; do [ -d crates/$c ] || continue; for b in dec enc; do CRATE=$c BENCH=$b bash "$0"; done; done
+    for c in amr-nb amr-wb lc3 vorbis-enc; do [ -d crates/$c ] || continue; for b in $([ $c = vorbis-enc ] || echo dec) enc; do CRATE=$c BENCH=$b bash "$0"; done; done
     exit
 fi
 crate=${CRATE:-$(first_codec)} side=${BENCH:-enc}
@@ -26,8 +27,8 @@ for p in perf $(compgen -c perf_ | sort -uV); do
     "$p" stat -e task-clock true >/dev/null 2>&1 && { perf=$p; break; }
 done
 [ -n "$perf" ] || { echo "perf: no working perf (container: --cap-add=PERFMON, linux-perf; host: perf_event_paranoid <= 2)" >&2; exit 1; }
-ev=cycles:u; [ -d /sys/bus/event_source/devices/cpu_core ] && ev=cpu_core/cycles/u  # hybrid: P-core PMU
-for build in avx2 portable; do
+ev=cycles:u; [ -d /sys/bus/event_source/devices/cpu_core ] && ev=cpu_core/cycles/u; ev=${PERF_EV:-$ev}  # hybrid: P-core PMU
+for build in ${PERF_BUILDS:-avx2 portable}; do
     flags=${RUSTFLAGS:-} dir=$PWD/target
     [ $build = portable ] && flags="$flags --cfg portable" dir=$PWD/target/portable  # as just test/bench
     exe=$(RUSTFLAGS=$flags CARGO_TARGET_DIR=$dir cargo bench -p "$crate" --bench codec --no-run 2>&1 |
@@ -44,12 +45,14 @@ base = {}
 for line in subprocess.run(["nm", "-C", "--defined-only", exe], capture_output=True, text=True).stdout.splitlines():
     a, _, name = line.split(" ", 2)
     base.setdefault(name, int(a, 16))
-hits, samples = collections.Counter(), 0
+hits, samples, shared = collections.Counter(), 0, collections.Counter()
 for line in sys.stdin:
     samples += 1
     m = re.match(r"\s*[0-9a-f]+ (.*)\+0x([0-9a-f]+) \((.*)\)$", line)
     if m and m.group(3) == exe and m.group(1) in base:
         hits[base[m.group(1)] + int(m.group(2), 16)] += 1
+    elif m and m.group(3) != exe:
+        shared[m.group(1)] += 1  # libm/libc: not charged to a Rust function (no call graph)
 addrs = sorted(hits)
 out = subprocess.run(["addr2line", "-a", "-i", "-f", "-C", "-e", exe], capture_output=True, text=True,
                      input="\n".join(f"{a:x}" for a in addrs)).stdout.splitlines()
@@ -72,13 +75,22 @@ what = f"in {fn}*, self cycles per source line" if fn else "in the Rust codec, s
 print(f"{head}: {100 * total / max(samples, 1):.1f}% of {samples} samples {what}:")
 for f, n in cost.most_common(top):
     print(f"{100 * n / max(total, 1):5.1f}%  {f}")
+if not fn and shared:  # Rust and the C baseline both call them: a hint, not a ranking
+    top3 = ", ".join(f"{f} {100 * n / max(samples, 1):.1f}%" for f, n in shared.most_common(3))
+    print(f"  (+ {100 * sum(shared.values()) / max(samples, 1):.1f}% of samples in shared libraries, Rust and C callers: {top3})")
 ' "$exe" "${crate//-/_}" "$crate $side $build${BENCH_MODE:+ mode $BENCH_MODE}" "${TOP:-10}" "${FN:-}"
-    # C=1 (lc3): the same ranking for liblc3's distribution build (its renamed copy: the local
-    # copies of the oracle's global lc3_* symbols, by address range), to compare per stage.
+    # C=1 (lc3): the same ranking for liblc3's distribution build (its renamed copy, by address
+    # range: the local copies of the oracle's global lc3_* symbols, and the copy's instance of
+    # every static both copies have; LTO places some statics, e.g. its FFT, before the lc3_* ones).
     [ "${C:-}" = 1 ] && [ $build = avx2 ] || continue
     [ "$crate" = lc3 ] || { echo "perf: C=1 needs CRATE=lc3 (a renamed C copy in the bench)" >&2; exit 1; }
-    read -r lo hi < <(nm "$exe" | awk '$2 == "T" && $3 ~ /^lc3_/ {g[$3] = 1} $2 == "t" {l[$3] = $1}
-        END {lo = "z"; hi = ""; for (n in g) if (n in l) {if (l[n] < lo) lo = l[n]; if (l[n] > hi) hi = l[n]}
+    read -r lo hi < <(nm "$exe" | awk '$2 == "T" && $3 ~ /^lc3_/ {g[$3] = 1; if ($1 > gmax) gmax = $1}
+        $2 == "t" {n[$3]++; a[$3, n[$3]] = $1}
+        END {lo = "z"; hi = ""
+             for (k in n) if (k in g || n[k] == 2) {
+                 x = (k in g) ? a[k, 1] : (a[k, 1] > a[k, 2] ? a[k, 1] : a[k, 2])
+                 if (!(k in g) && x < gmax) continue  # the copy sits above the oracle
+                 if (x < lo) lo = x; if (x > hi) hi = x }
              print lo, hi}')
     [ "$lo" != z ] || { echo "perf: no fast liblc3 copy in the bench (see liblc3-sys build warnings)" >&2; exit 1; }
     "$perf" report -i target/perf.data --no-children --sort sym -v 2>/dev/null | grep -v '^#' |

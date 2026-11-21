@@ -5,7 +5,7 @@
 //! apply them as gains.
 
 use crate::bits::{Bits, Writer};
-use crate::common::{DT_7M5, SRATE_48K};
+use crate::common::DT_7M5;
 use crate::fastmath::{exp2f, log2f};
 use crate::tables::{
     DCT16_M, LC3_BAND_LIM, LC3_NUM_BANDS, LC3_SNS_HFCB, LC3_SNS_LFCB, LC3_SNS_MPVQ_OFFSETS,
@@ -16,7 +16,7 @@ use crate::tables::{
 const MAX_BANDS: usize = 64;
 
 /// `lc3_sns_data_t`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SnsData {
     pub lfcb: usize,
     pub hfcb: usize,
@@ -199,7 +199,7 @@ fn compute_scale_factors(dt: usize, sr: usize, eb: &[f32], att: bool, scf: &mut 
     e[4 * n4 + 2 * n2..4 * n4 + 2 * n2 + m].copy_from_slice(&eb[n4 + n2..n4 + n2 + m]);
 
     // Smoothing, pre-emphasis and logarithm
-    let ge = &SNS_GE[sr.min(SRATE_48K)];
+    let ge = &SNS_GE[sr];
     let (mut e0, mut e1) = (e[0], e[0]);
     let mut e2;
     let mut e_sum = 0f32;
@@ -546,4 +546,22 @@ pub(crate) fn get_data(bits: &mut Bits) -> Result<SnsData, ()> {
         }
     }
     Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    /// On a tie the C keeps the first position (`>`, not `>=`): with equal targets the first
+    /// pulse lands on index 0, and with all-zero ones (every gain ties) every pulse does.
+    #[test]
+    fn add_pulse_ties_keep_the_first() {
+        let x = [0.25f32; 16];
+        let mut y = [0i32; 16];
+        let (mut corr, mut energy) = (0.0, 0.0);
+        super::add_pulse(&x, &mut y, 16, 0, 1, &mut corr, &mut energy);
+        assert_eq!(y[0], 1);
+        let mut y = [0i32; 16];
+        let (mut corr, mut energy) = (0.0, 0.0);
+        super::add_pulse(&[0.0; 16], &mut y, 16, 0, 3, &mut corr, &mut energy);
+        assert_eq!(y[0], 3, "{y:?}");
+    }
 }

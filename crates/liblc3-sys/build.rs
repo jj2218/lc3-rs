@@ -16,6 +16,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+include!("../../scripts/strict_c.rs");
+
 const SRC: &[&str] = &[
     "attdet", "bits", "bwdet", "energy", "lc3", "ltpf", "mdct", "plc", "sns", "spec", "tables",
     "tns",
@@ -43,7 +45,10 @@ fn cache_dir() -> PathBuf {
 }
 
 fn main() {
-    let root = cache_dir().join("liblc3/liblc3-1.1.3");
+    let cache = cache_dir();
+    // for the tests' other downloads (the ETSI items), worktrees included
+    println!("cargo:rustc-env=LIBLC3_SYS_CACHE_DIR={}", cache.display());
+    let root = cache.join("liblc3/liblc3-1.1.3");
     assert!(
         root.join("src/lc3.c").exists(),
         "liblc3 not found at {}: run `just liblc3`",
@@ -63,6 +68,23 @@ fn main() {
     for s in SRC {
         b.file(root.join(format!("src/{s}.c")));
     }
+    assert_strict(&b);
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        // a later `-march=` (CFLAGS, CFLAGS_<target>, a CC wrapper: cc puts them after ours)
+        // wins and brings the NEON kernels back (measured: `-march=armv8.2-a`, 38 fmla)
+        let args: Vec<String> = b
+            .get_compiler()
+            .to_command()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let last = args.iter().rev().find(|a| a.starts_with("-march="));
+        assert!(
+            last.is_some_and(|a| a.ends_with("+nosimd")),
+            "liblc3 oracle: the last -march= is {last:?}, without +nosimd: liblc3's NEON kernels \
+             (another operation order, FMA) would be compiled; unset it for this build"
+        );
+    }
     b.compile("lc3");
     if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
         fast(&root);
@@ -71,6 +93,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OBJCOPY");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", root.join("src").display());
+    println!("cargo:rerun-if-changed={}", root.join("include").display());
 }
 
 /// The public API `lc3.h` exports (renamed `lc3fast_*` in the fast copy).

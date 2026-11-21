@@ -4,22 +4,24 @@
 //! coefficients from the bitstream, lattice inverse filtering. One or two frequency ranges.
 
 use crate::bits::{Bits, Writer};
-use crate::common::{DT_2M5, DT_5M, DT_7M5, SRATE_48K, ne};
+use crate::common::{BANDWIDTH_SWB, DT_5M, DT_7M5, ne};
 use crate::tables::{
     LC3_TNS_COEFFS_BITS, LC3_TNS_COEFFS_MODELS, LC3_TNS_ORDER_BITS, LC3_TNS_ORDER_MODELS,
     TNS_LAG_WINDOW, TNS_Q_INV,
 };
 
-/// `LC3_BANDWIDTH_SWB`.
-const BANDWIDTH_SWB: usize = 3;
-
 /// `lc3_tns_data_t`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct TnsData {
     pub nfilters: usize,
     pub lpc_weighting: bool,
     pub rc_order: [usize; 2],
     pub rc: [[i32; 8]; 2],
+}
+
+/// The filter count: two from 5 ms at 32 kHz bandwidth and up.
+fn nfilters(dt: usize, bw: usize) -> usize {
+    1 + usize::from(dt >= DT_5M && bw >= BANDWIDTH_SWB)
 }
 
 /// `resolve_lpc_weighting`.
@@ -43,8 +45,8 @@ fn inverse_filtering(
     rc: &[[f32; 8]; 2],
     x: &mut [f32],
 ) {
-    let nfilters = 1 + usize::from(dt >= DT_5M && bw >= BANDWIDTH_SWB);
-    let nf = ne(dt, bw.min(SRATE_48K)) >> (nfilters - 1);
+    let nfilters = nfilters(dt, bw);
+    let nf = ne(dt, bw) >> (nfilters - 1);
     let mut ie = 3 * (1 + dt);
     let mut s = [0f32; 8];
     for f in 0..nfilters {
@@ -82,7 +84,7 @@ pub(crate) fn synthesize(dt: usize, bw: usize, data: &TnsData, x: &mut [f32]) {
 /// `lc3_tns_get_data`; `Err` on an order above 4 at 2.5 or 5 ms.
 pub(crate) fn get_data(bits: &mut Bits, dt: usize, bw: usize, nbytes: i32) -> Result<TnsData, ()> {
     let mut data = TnsData {
-        nfilters: 1 + usize::from(dt >= DT_5M && bw >= BANDWIDTH_SWB),
+        nfilters: nfilters(dt, bw),
         lpc_weighting: resolve_lpc_weighting(dt, nbytes),
         ..TnsData::default()
     };
@@ -165,15 +167,10 @@ fn compute_lpc_coeffs(
         &[12, 61, 110, 160, 213, 266, 320],
         &[12, 74, 137, 200, 266, 333, 400],
     ];
-    let sub = match dt {
-        DT_2M5 => SUB_2M5,
-        DT_5M => SUB_5M,
-        DT_7M5 => SUB_7M5,
-        _ => SUB_10M,
-    }[bw.min(4)];
+    let sub = [SUB_2M5, SUB_5M, SUB_7M5, SUB_10M][dt][bw];
 
     // Normalised autocorrelation
-    let nfilters = 1 + usize::from(dt >= DT_5M && bw >= BANDWIDTH_SWB);
+    let nfilters = nfilters(dt, bw);
     let nsubdivisions = 2 + usize::from(dt >= DT_7M5);
     let mut r = [[0f32; 9]; 2];
     let mut isub = 0;
@@ -188,24 +185,17 @@ fn compute_lpc_coeffs(
             }
         }
         rf[0] = nsubdivisions as f32;
-        if nsubdivisions == 2 {
-            let (e0, e1) = (c[0][0], c[0][1]);
-            for k in 1..=maxorder {
-                rf[k] = if e0 == 0.0 || e1 == 0.0 {
-                    0.0
-                } else {
-                    (c[k][0] / e0 + c[k][1] / e1) * TNS_LAG_WINDOW[k]
-                };
+        let e = &c[0][..nsubdivisions];
+        if e.contains(&0.0) {
+            continue;
+        }
+        for k in 1..=maxorder {
+            // the C's left-to-right sum of the 2 or 3 terms
+            let mut v = c[k][0] / e[0];
+            for s in 1..nsubdivisions {
+                v += c[k][s] / e[s];
             }
-        } else {
-            let (e0, e1, e2) = (c[0][0], c[0][1], c[0][2]);
-            for k in 1..=maxorder {
-                rf[k] = if e0 == 0.0 || e1 == 0.0 || e2 == 0.0 {
-                    0.0
-                } else {
-                    (c[k][0] / e0 + c[k][1] / e1 + c[k][2] / e2) * TNS_LAG_WINDOW[k]
-                };
-            }
+            rf[k] = v * TNS_LAG_WINDOW[k];
         }
     }
 
@@ -309,8 +299,8 @@ fn forward_filtering(
     rc: &[[f32; 8]; 2],
     x: &mut [f32],
 ) {
-    let nfilters = 1 + usize::from(dt >= DT_5M && bw >= BANDWIDTH_SWB);
-    let nf = ne(dt, bw.min(SRATE_48K)) >> (nfilters - 1);
+    let nfilters = nfilters(dt, bw);
+    let nf = ne(dt, bw) >> (nfilters - 1);
     let mut ie = 3 * (1 + dt);
     let mut s = [0f32; 8];
     for f in 0..nfilters {
@@ -337,7 +327,7 @@ fn forward_filtering(
 /// `lc3_tns_analyze`: the filters of the spectrum `x` (filtered in place).
 pub(crate) fn analyze(dt: usize, bw: usize, nn_flag: bool, nbytes: i32, x: &mut [f32]) -> TnsData {
     let mut data = TnsData {
-        nfilters: 1 + usize::from(dt >= DT_5M && bw >= BANDWIDTH_SWB),
+        nfilters: nfilters(dt, bw),
         lpc_weighting: resolve_lpc_weighting(dt, nbytes),
         ..TnsData::default()
     };

@@ -17,12 +17,13 @@ trap 'rm -rf "$logs"' EXIT
 
 # every codec crate present (a product export has a subset), not the *-sys oracles
 pkgs=$(for c in crates/*/; do c=${c%/}; c=${c#crates/}; [[ $c == *-sys ]] || printf -- '-p %s ' "$c"; done)
-configs=(
-    "dispatch||target|--workspace"
-    "portable|--cfg portable|target/portable|$pkgs"
-)
+# --cfg portable only changes crates with SIMD kernels (src/simd.rs): the rest would run twice
+simd=$(for c in crates/*/src/simd.rs; do [ -e "$c" ] || continue; c=${c#crates/}; printf -- '-p %s ' "${c%%/*}"; done)
+# --cfg oracle: the C-oracle unit tests in src/ (out of a published `.crate`: package-test.sh)
+configs=("dispatch|--cfg oracle|target|--workspace")
+[ -z "$simd" ] || configs+=("portable|--cfg oracle --cfg portable|target/portable|$simd")
 [ ! -d crates/amr-nb ] ||
-    configs+=("arrays|--cfg portable --cfg amr_nb_arrays|target/arrays|--release -p amr-nb --test conformance")
+    configs+=("arrays|--cfg oracle --cfg portable --cfg amr_nb_arrays|target/arrays|--release -p amr-nb --test conformance")
 runner=()
 if [ "${TARGET:-}" = aarch64 ]; then
     t=aarch64-unknown-linux-gnu
@@ -31,7 +32,7 @@ if [ "${TARGET:-}" = aarch64 ]; then
     export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
     export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
     export CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true
-    configs=("aarch64||target/aarch64|--release --target $t $pkgs")
+    configs=("aarch64|--cfg oracle|target/aarch64|--release --target $t $pkgs")
     runner=(qemu-aarch64 -L /usr/aarch64-linux-gnu)
 fi
 # build: every config's test binaries as "<config> <package dir> <executable>" lines
@@ -48,12 +49,18 @@ build() {
 # configuration, so only the dispatch run has them.
 C_ONLY=(c_oracle_with_homing_is_bit_exact c_encoder_oracle_with_homing_is_bit_exact
     c_encoder_oracle_sync c_decoders_on_vectors reference_encoder_on_vectors
-    vo_amrwbenc_on_vectors no_vector_has_no_data_mid_speech)
+    vo_amrwbenc_on_vectors no_vector_has_no_data_mid_speech spike_hashes)
 # Their result depends only on the inputs below (C sources and vectors are SHA-pinned by the
-# fetch scripts): a passing dispatch run stamps the inputs' hash, and later runs skip them
-# while it is unchanged (the TS 26.173 reference encoder alone is ~125 s of every check).
-c_key=$(find crates/*-sys crates/*/tests $(ls scripts/{fetch,vectors,opencore,liblc3}.sh 2>/dev/null) \
-    -type f | sort | xargs sha256sum | sha256sum | cut -c1-32)
+# fetch scripts; the C build: the compiler's version, the cc crate's version, every CC/CFLAGS
+# environment variable): a passing dispatch run stamps the inputs' hash, and later runs skip
+# them while it is unchanged (the TS 26.173 reference encoder alone is ~125 s of every check).
+c_key=$({
+    find crates/*-sys crates/*/tests $(ls scripts/{fetch,vectors,opencore,liblc3,aotuv}.sh scripts/strict_c.rs 2>/dev/null) \
+        -type f | sort | xargs sha256sum
+    ${CC:-cc} --version 2>&1
+    grep -A1 '^name = "cc"$' Cargo.lock
+    env | grep -E '^(HOST_|TARGET_)?(CC|CFLAGS|CRATE_CC_NO_DEFAULTS)[_=]' | sort
+} | sha256sum | cut -c1-32)
 c_stamp=.cache/checked-c/$c_key
 c_cached=false
 [ -e "$c_stamp" ] && c_cached=true
@@ -104,7 +111,7 @@ if [ ${#runner[@]} -gt 0 ]; then
     for p in "${pids[@]}"; do wait "$p" || rc=1; done
     exit $rc
 fi
-run "dispatch doc tests" "$logs/doc" cargo test --locked --workspace --doc -q &
+RUSTFLAGS="--cfg oracle" run "dispatch doc tests" "$logs/doc" cargo test --locked --workspace --doc -q &
 pids+=($!)
 for p in "${pids[@]}"; do wait "$p" || rc=1; done
 if $c_cached; then

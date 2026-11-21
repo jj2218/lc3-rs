@@ -33,6 +33,15 @@ for t in $targets; do
   dir=$(dir_of "$t")
   corpus=.cache/fuzz/corpus/$t art=.cache/fuzz/artifacts/$t log=.cache/fuzz/$t.log
   mkdir -p "$corpus" "$art"
+  # Known leaks of a C oracle: fuzz/<product>/lsan.supp, one `leak:<function>` per defect
+  # (matched by name, so the stack needs a symbolizer).
+  if [ -f "$dir/lsan.supp" ]; then
+    export LSAN_OPTIONS=suppressions=$PWD/$dir/lsan.supp
+    sym=$(command -v llvm-symbolizer || ls /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | tail -1 || true)
+    [ -z "$sym" ] || export ASAN_SYMBOLIZER_PATH=$sym
+  else
+    unset LSAN_OPTIONS
+  fi
   if cargo +"$NIGHTLY" fuzz run --fuzz-dir "$dir" "$t" "$corpus" -- \
       -max_total_time="$secs" -artifact_prefix="$art/" -print_final_stats=1 >"$log" 2>&1; then
     runs=$(grep -oP 'stat::number_of_executed_units:\s*\K\d+' "$log" || echo "?")

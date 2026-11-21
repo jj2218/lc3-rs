@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # the first codec crate present (a product export has a subset)
-first_codec() { for c in amr-nb amr-wb lc3; do [ -d crates/$c ] && { echo $c; return; }; done; }
+first_codec() { for c in amr-nb amr-wb lc3 vorbis-enc; do [ -d crates/$c ] && { echo $c; return; }; done; }
 crate=${CRATE:-$(first_codec)}  # CRATE=<codec>: another one present
 mod=${crate//-/_}
 src=target/profile-src

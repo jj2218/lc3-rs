@@ -2,8 +2,10 @@
 //! the strict-IEEE oracle build ("strict"), on the ETSI LC3plus items (`just lc3plus`), 16-bit
 //! PCM, per operating point: 16 kHz / 7.5 ms at 32 kbit/s (SIG speech) and 48 kHz / 10 ms at
 //! 96 kbit/s (SIG music). The decoder decodes the strict build's frames (the Rust encoder's).
-//! `BENCH=dec|enc`: one side; `BENCH_MODE=16k7.5|48k10`: one point. Run via
-//! `CRATE=lc3 just bench` (pins one core). Prints µs/frame (best of BENCH_REPS, default 15).
+//! `BENCH=dec|enc`: one side; `BENCH_MODE=16k7.5|48k10`: one point; `BENCH_GRID=1`: every
+//! duration × rate (8–48 kHz at 24–96 kbit/s, modes `48k2.5` …); `BENCH_IMPL=rust|c|strict|none`:
+//! only that implementation (`none`: the setup alone; instruction counting, `AB= COUNT=1`). Run
+//! via `CRATE=lc3 just bench` (pins one core). Prints µs/frame (best of BENCH_REPS, default 15).
 #![allow(unsafe_code)] // FFI to the C baseline
 
 use lc3::{Decoder, Encoder};
@@ -29,7 +31,13 @@ fn wanted(name: &str) -> bool {
     std::env::var("BENCH_MODE").map_or(true, |m| m == name)
 }
 
-fn best<F: FnMut()>(mut f: F) -> f64 {
+/// BENCH_IMPL=rust|c|strict|none: only that implementation runs (instruction counting).
+fn best_of<F: FnMut()>(which: &str, mut f: F) -> f64 {
+    if let Ok(i) = std::env::var("BENCH_IMPL")
+        && i != which
+    {
+        return f64::NAN;
+    }
     (0..reps())
         .map(|_| {
             let t = Instant::now();
@@ -163,14 +171,38 @@ fn side(enc: bool) {
         "speedup"
     );
     let (mut tot, mut tn) = ([0.0; 3], 0);
-    for &(name, dt, sr, bitrate) in POINTS.iter().filter(|p| wanted(p.0)) {
-        let nbytes = (bitrate * dt / 8_000_000) as usize;
+    let grid: Vec<(String, u32, u32, u32)> = if std::env::var("BENCH_GRID").is_ok() {
+        let mut g = vec![];
+        for dt in [2500u32, 5000, 7500, 10000] {
+            for (sr, br) in [
+                (8000u32, 24000u32),
+                (16000, 32000),
+                (24000, 48000),
+                (32000, 64000),
+                (48000, 96000),
+            ] {
+                g.push((format!("{}k{}", sr / 1000, dt as f64 / 1000.0), dt, sr, br));
+            }
+        }
+        g
+    } else {
+        POINTS
+            .iter()
+            .map(|p| (p.0.to_string(), p.1, p.2, p.3))
+            .collect()
+    };
+    for (name, dt, sr, bitrate) in grid
+        .iter()
+        .filter(|p| wanted(&p.0))
+        .map(|p| (p.0.as_str(), p.1, p.2, p.3))
+    {
+        let nbytes = ((bitrate * dt / 8_000_000) as usize).clamp(20, 400);
         let pcm = wav(sr);
         let frames = c_encode(&STRICT, dt, sr, nbytes, &pcm);
         let ns = (dt * sr / 1_000_000) as usize;
         let t = if enc {
             [
-                best(|| {
+                best_of("rust", || {
                     let mut e = Encoder::new(dt, sr, sr).unwrap();
                     let mut o = vec![0u8; nbytes];
                     for f in pcm.chunks_exact(ns) {
@@ -179,13 +211,13 @@ fn side(enc: bool) {
                     }
                 }),
                 FAST.map_or(f64::NAN, |api| {
-                    best(|| c_encode_run(&api, dt, sr, nbytes, &pcm))
+                    best_of("c", || c_encode_run(&api, dt, sr, nbytes, &pcm))
                 }),
-                best(|| c_encode_run(&STRICT, dt, sr, nbytes, &pcm)),
+                best_of("strict", || c_encode_run(&STRICT, dt, sr, nbytes, &pcm)),
             ]
         } else {
             [
-                best(|| {
+                best_of("rust", || {
                     let mut d = Decoder::new(dt, sr, sr).unwrap();
                     let mut o = [0i16; 480];
                     for f in &frames {
@@ -193,8 +225,10 @@ fn side(enc: bool) {
                         black_box(&o);
                     }
                 }),
-                FAST.map_or(f64::NAN, |api| best(|| c_decode(&api, dt, sr, &frames))),
-                best(|| c_decode(&STRICT, dt, sr, &frames)),
+                FAST.map_or(f64::NAN, |api| {
+                    best_of("c", || c_decode(&api, dt, sr, &frames))
+                }),
+                best_of("strict", || c_decode(&STRICT, dt, sr, &frames)),
             ]
         };
         row(name, t, frames.len());
@@ -211,6 +245,7 @@ fn side(enc: bool) {
 
 fn main() {
     if let Ok(m) = std::env::var("BENCH_MODE")
+        && std::env::var("BENCH_GRID").is_err()
         && !POINTS.iter().any(|p| p.0 == m)
     {
         let names: Vec<_> = POINTS.iter().map(|p| p.0).collect();

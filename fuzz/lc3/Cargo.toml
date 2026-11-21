@@ -30,3 +30,10 @@ path = "fuzz_targets/lc3_encode_vs_c.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "lc3_api"
+path = "fuzz_targets/lc3_api.rs"
+test = false
+doc = false
+bench = false

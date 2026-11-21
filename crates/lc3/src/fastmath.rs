@@ -52,7 +52,6 @@ fn frexpf(x: f32) -> (f32, i32) {
 }
 
 /// `lc3_log2f`: log2(x), x > 0, from a degree-4 polynomial on the mantissa.
-#[allow(clippy::approx_constant)]
 pub(crate) fn log2f(x: f32) -> f32 {
     const C: [f32; 5] = [
         -1.29479677_f64 as f32,

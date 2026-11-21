@@ -1,14 +1,14 @@
-//! The only module allowed to use `unsafe`: SSE2 intrinsics bodies where LLVM's lanes stay
+//! The only non-test module allowed to use `unsafe`: SSE2 intrinsics bodies where LLVM's lanes stay
 //! poor. SSE2 is part of the x86-64 baseline, so there is no runtime check; each kernel's
 //! portable body (in its module) is the contract and the differential oracle, and
 //! `--cfg portable` compiles these out (`just test` runs both paths).
 #![allow(unsafe_code)] // the approved scope: SIMD kernels, below
 
 /// Σ a[i]·b[i], exact, for equal lengths that are a multiple of 16 (≤ 2^11).
-#[cfg(all(target_arch = "x86_64", not(portable)))]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(portable)))]
 pub(crate) fn dot16(a: &[i16], b: &[i16]) -> i64 {
     assert!(a.len() == b.len() && a.len().is_multiple_of(16) && a.len() <= 1 << 11);
-    // SAFETY: SSE2 is enabled on every x86-64 target (baseline).
+    // SAFETY: SSE2 is enabled (the `target_feature = "sse2"` gate; x86-64 baseline).
     unsafe { dot16_sse2(a, b) }
 }
 
@@ -16,7 +16,7 @@ pub(crate) fn dot16(a: &[i16], b: &[i16]) -> i64 {
 /// wrapping i32 sums, each in [−2^31 + 2^16, 2^31], so its offset from the lower end, mod
 /// 2^32, is the exact pair sum as a u32; its 16-bit halves are summed apart in 32-bit lanes
 /// (they fit for n ≤ 2^11). Equal to `ltpf::dot_portable`'s sum (its contract) for lengths a multiple of 16.
-#[cfg(all(target_arch = "x86_64", not(portable)))]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(portable)))]
 #[target_feature(enable = "sse2")]
 // SAFETY: (to call) needs SSE2, which every x86-64 CPU has; `dot16` is the safe entry.
 unsafe fn dot16_sse2(a: &[i16], b: &[i16]) -> i64 {
@@ -47,10 +47,10 @@ unsafe fn dot16_sse2(a: &[i16], b: &[i16]) -> i64 {
 
 /// Σ x[k]·h[k] as a wrapping i32 (`ltpf::dot_wrap_portable` is the contract): `pmaddwd`
 /// pairs wrap mod 2^32 as the plain sum does, so any order is exact.
-#[cfg(all(target_arch = "x86_64", not(portable)))]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(portable)))]
 pub(crate) fn dot_wrap(x: &[i16], h: &[i16]) -> i32 {
     let n = x.len().min(h.len());
-    // SAFETY: SSE2 is enabled on every x86-64 target (baseline).
+    // SAFETY: SSE2 is enabled (the `target_feature = "sse2"` gate; x86-64 baseline).
     let v = unsafe { dot_wrap_sse2(&x[..n - n % 8], &h[..n - n % 8]) };
     x[n - n % 8..n]
         .iter()
@@ -58,7 +58,7 @@ pub(crate) fn dot_wrap(x: &[i16], h: &[i16]) -> i32 {
         .fold(v, |s, (&a, &b)| s.wrapping_add(i32::from(a) * i32::from(b)))
 }
 
-#[cfg(all(target_arch = "x86_64", not(portable)))]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(portable)))]
 #[target_feature(enable = "sse2")]
 // SAFETY: (to call) needs SSE2, which every x86-64 CPU has; `dot_wrap` is the safe entry.
 unsafe fn dot_wrap_sse2(x: &[i16], h: &[i16]) -> i32 {

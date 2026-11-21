@@ -119,15 +119,21 @@ fuzz_target!(|data: &[u8]| {
             let want = match s {
                 Ok(Status::Decoded) => 0,
                 Ok(Status::Concealed) => 1,
-                Err(Error::FrameSize) => -1,
-                Err(e) => panic!("{e:?} {at}"),
+                Err(Error::FrameSize(_)) => -1,
+                s => panic!("{s:?} {at}"),
             };
             assert_eq!(want, rc, "status {at}");
         }
         if rc16 >= 0 {
             assert_eq!(o16, p16, "s16 {at}");
-            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-            assert_eq!(bits(&of), bits(&pf), "float {at}");
+            // bit-exact, but for the pinned deviation (`Decoder` docs): where liblc3's
+            // exponent arithmetic wraps a sample below 2^-112, the Rust one is ~0
+            for (&a, &b) in of.iter().zip(&pf) {
+                assert!(
+                    a.to_bits() == b.to_bits() || a.abs() < 1e-37,
+                    "float {a:e} vs {b:e} {at}"
+                );
+            }
         }
         f += 1;
     }

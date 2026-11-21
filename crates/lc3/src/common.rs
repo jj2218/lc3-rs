@@ -7,17 +7,19 @@ pub(crate) const DT_2M5: usize = 0;
 pub(crate) const DT_5M: usize = 1;
 pub(crate) const DT_7M5: usize = 2;
 pub(crate) const DT_10M: usize = 3;
-/// `enum lc3_srate` (and `enum lc3_bandwidth`): 8, 16, 24, 32, 48 kHz, then high resolution.
-pub(crate) const SRATE_48K: usize = 4;
-pub(crate) const SRATE_48K_HR: usize = 5;
 
-/// `LC3_MAX_NS`: 10 ms at 96 kHz.
-pub(crate) const MAX_NS: usize = 960;
+/// `LC3_SRATE_32K` of `enum lc3_srate`: 8, 16, 24, 32, 48 kHz as 0..=4 (the high-resolution
+/// rates are not ported); `LC3_BANDWIDTH_SWB` of `enum lc3_bandwidth`, the same indices.
+pub(crate) const SRATE_32K: usize = 3;
+pub(crate) const BANDWIDTH_SWB: usize = 3;
 
-/// `lc3_hr`: a high-resolution rate.
-pub(crate) fn hr(sr: usize) -> bool {
-    sr >= SRATE_48K_HR
-}
+/// The frame durations of `enum lc3_dt`, in µs.
+pub(crate) const FRAME_US: [u32; 4] = [2500, 5000, 7500, 10000];
+/// The sample rates of `enum lc3_srate` (no high-resolution mode), in Hz.
+pub(crate) const SAMPLE_RATES: [u32; 5] = [8000, 16000, 24000, 32000, 48000];
+
+/// `LC3_MAX_NS` without the high-resolution rates: 10 ms at 48 kHz.
+pub(crate) const MAX_NS: usize = 480;
 
 /// `lc3_ns`: samples (and coefficients) per frame.
 pub(crate) fn ns(dt: usize, sr: usize) -> usize {
@@ -40,11 +42,7 @@ pub(crate) fn nd(dt: usize, sr: usize) -> usize {
         >> 1
 }
 
-/// `lc3_nh`: 18 ms of history, aligned on a frame (none at high resolution).
+/// `lc3_nh`: 18 ms of history, aligned on a frame.
 pub(crate) fn nh(dt: usize, sr: usize) -> usize {
-    if sr > SRATE_48K_HR {
-        0
-    } else {
-        (8 + usize::from(dt == DT_7M5)) * LC3_NS_2M5[sr]
-    }
+    (8 + usize::from(dt == DT_7M5)) * LC3_NS_2M5[sr]
 }

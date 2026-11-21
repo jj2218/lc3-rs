@@ -1,8 +1,7 @@
 //! Bandwidth detector (liblc3 `bwdet.c`): the widest band with energy, unless a drop above a
 //! narrower cut-off holds it.
 
-use crate::bits::Writer;
-use crate::common::{DT_2M5, DT_5M, DT_7M5};
+use crate::bits::{Bits, Writer};
 
 /// `lc3_bwdet_run`: the bandwidth (as `enum lc3_bandwidth`) from the band energies `e`.
 pub(crate) fn run(dt: usize, sr: usize, e: &[f32]) -> usize {
@@ -39,12 +38,7 @@ pub(crate) fn run(dt: usize, sr: usize, e: &[f32]) -> usize {
     if bwn <= bw0 {
         return bwn;
     }
-    let bwr = &match dt {
-        DT_2M5 => BWS_2M5,
-        DT_5M => BWS_5M,
-        DT_7M5 => BWS_7M5,
-        _ => BWS_10M,
-    }[bwn - 1];
+    let bwr = &[BWS_2M5, BWS_5M, BWS_7M5, BWS_10M][dt][bwn - 1];
     for (bw, &[is, ie]) in bwr.iter().enumerate().take(bwn) {
         let mut se = e[is];
         for &v in &e[is + 1..ie] {
@@ -80,6 +74,17 @@ pub(crate) fn put_bw(bits: &mut Writer, sr: usize, bw: usize) {
     if nbits > 0 {
         bits.put_bits(bw as u32, nbits);
     }
+}
+
+/// `lc3_bwdet_get_bw`.
+pub(crate) fn get_bw(bits: &mut Bits, sr: usize) -> Result<usize, ()> {
+    let nbits = get_nbits(sr);
+    let bw = if nbits == 0 {
+        sr
+    } else {
+        bits.get_bits(nbits) as usize
+    };
+    if bw > sr { Err(()) } else { Ok(bw) }
 }
 
 /// `lc3_bwdet_get_nbits`.

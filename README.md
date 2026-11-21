@@ -8,7 +8,7 @@ cargo add lc3
 
 | crate | |
 |---|---|
-| [`lc3`](crates/lc3) | LC3 (Bluetooth SIG LC3 1.0; liblc3's 2.5/5 ms too): encoder, decoder, packet loss concealment, 8–48 kHz, 16-bit or float PCM. Bit-exact with liblc3 on the SIG conformance operating points; faster than liblc3 as distributions build it at 48 kHz. [README: example, speed, scope, patents](crates/lc3/README.md) |
+| [`lc3`](crates/lc3) | LC3 (Bluetooth SIG LC3 1.0; liblc3's 2.5/5 ms too): encoder, decoder, packet loss concealment, 8–48 kHz, 16-bit or float PCM. Bit-exact with liblc3 on the SIG conformance operating points (but for two liblc3 defects); faster than liblc3 as distributions build it at 16 and 48 kHz. [README: example, speed, scope, patents](crates/lc3/README.md) |
 | `liblc3-sys` | test-only (not published): liblc3 1.1.3 as the oracle (and the speed baseline), compiled from a pinned download |
 
 No dependencies. Measured results, each with the command that reproduces it:

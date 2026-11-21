@@ -5,9 +5,10 @@ on:
   push:
     branches: [main]
 
-# What builds without the downloaded oracle and test items (guard, format, the library on
-# x86-64 and aarch64 and at its minimum Rust version, docs, the package). The tests against
-# liblc3 and the conformance items run locally: `just check`.
+# check: what builds without the downloaded oracle and test items (guard, format, the library
+# on x86-64 and aarch64 and at its minimum Rust version, docs, the package and its tests from
+# the `.crate`). test: `just test`, against liblc3 on the ETSI items (both downloaded and
+# SHA-verified, cached by the scripts that pin them).
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -21,4 +22,15 @@ jobs:
       - run: RUSTFLAGS="--cfg portable" cargo clippy -p lc3 --lib --locked -- -D warnings
       - run: cargo clippy -p lc3 --lib --locked --target aarch64-unknown-linux-gnu -- -D warnings
       - run: RUSTDOCFLAGS="-D warnings" cargo doc -p lc3 --no-deps --locked
-      - run: cargo package -p lc3 --locked
+      - run: bash scripts/package-test.sh lc3
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: extractions/setup-just@v4
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: downloads-${{ hashFiles('scripts/liblc3.sh', 'scripts/lc3plus.sh', 'scripts/fetch.sh') }}
+      - run: just test

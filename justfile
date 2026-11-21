@@ -14,15 +14,15 @@ rules:
 
 # The published codec crates present in this checkout, as `-p` arguments: recipe bodies stay the
 # same in every product (a product's justfile copies them; doctor compares them).
-export CODECS := `for c in amr-nb amr-wb lc3; do [ -d crates/$c ] && printf -- '-p %s ' $c; done; true`
+export CODECS := `for c in amr-nb amr-wb lc3 vorbis-enc; do [ -d crates/$c ] && printf -- '-p %s ' $c; done; true`
 
 fmt-check:
     cargo fmt --all --check
     for m in fuzz/*/Cargo.toml; do cargo fmt --manifest-path "$m" --check; done
 
 lint: liblc3 msrv
-    cargo clippy --workspace --all-targets --locked -- -D warnings
-    RUSTFLAGS="--cfg portable" CARGO_TARGET_DIR=target/portable cargo clippy $CODECS --all-targets --locked -- -D warnings
+    RUSTFLAGS="--cfg oracle" cargo clippy --workspace --all-targets --locked -- -D warnings
+    RUSTFLAGS="--cfg oracle --cfg portable" CARGO_TARGET_DIR=target/portable cargo clippy $CODECS --all-targets --locked -- -D warnings
     for m in fuzz/*/Cargo.toml; do cargo clippy --manifest-path "$m" --locked -- -D warnings; done
     cargo clippy -q $CODECS --lib --locked --target aarch64-unknown-linux-gnu -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc -q $CODECS --no-deps --locked
@@ -36,11 +36,10 @@ msrv:
     CARGO_TARGET_DIR=target/msrv cargo "+$v" check -q $CODECS --lib --locked
     echo "msrv: $(sed "s/-p //g" <<<"$CODECS")build with Rust $v"
 
-# The codec tests against their C oracles (fetched automatically, cached in .cache/), in parallel:
-# the default build (AMR: runtime AVX2 dispatch; LC3: baseline SSE2 kernels) and the portable
-# path (--cfg portable: src/simd.rs compiled out); with AMR-NB also its vectors on the SSE2
-# kernels' array forms (the non-x86 bodies). One line per run, a failing run's whole log
-# (scripts/test.sh).
+# scripts/test.sh: the default build (AMR: runtime AVX2 dispatch; LC3: baseline SSE2 kernels) and
+# the portable path (--cfg portable: src/simd.rs compiled out); with AMR-NB also its vectors on
+# the SSE2 kernels' array forms (the non-x86 bodies). One line per run, a failing run's whole log.
+# The codec tests against their C oracles (fetched and cached in .cache/), in parallel
 test: liblc3 lc3plus
     @bash scripts/test.sh
 
@@ -48,16 +47,11 @@ test: liblc3 lc3plus
 test-aarch64: liblc3 lc3plus
     @TARGET=aarch64 bash scripts/test.sh
 
-# Codec conformance, one summary line per run: each codec crate present, bit-exact vs its oracle (its conformance tests name the set: AMR the 3GPP vectors and reference C, LC3 liblc3 on the SIG operating points; pinned deviations counted, not failed)
+# Codec conformance, one summary line per run: each codec crate present, bit-exact vs its oracle (its conformance tests name the set: AMR the 3GPP vectors and reference C, LC3 liblc3 on the SIG operating points, Vorbis aoTuV's Ogg streams; pinned deviations counted, not failed)
 conform: liblc3 lc3plus
-    @[ ! -d crates/amr-nb ] || cargo test -q --release -p amr-nb --test conformance -- --nocapture 2>&1 | grep -E "bit-exact|failing|mismatch|panicked|error" | sed "s/^\.*//" || true
-    @[ ! -d crates/amr-wb ] || cargo test -q --release -p amr-wb --test conformance -- --nocapture 2>&1 | grep -E "bit-exact|panicked|error" | sed "s/^\.*//" || true
-    @[ ! -d crates/amr-wb ] || cargo test -q --release -p amr-wb --test enc_conformance -- --nocapture 2>&1 | grep -E "bit-exact|bit sync|panicked|error" | sed "s/^\.*//" || true
-    @[ ! -d crates/amr-wb ] || WB_STRESS_STREAMS=200 cargo test -q --release -p amr-wb --test vs_ref -- --nocapture 2>&1 | grep -E "bit-exact|differs|panicked|error" | sed "s/^\.*//" || true
-    @[ ! -d crates/amr-wb ] || cargo test -q --release -p amr-wb --test enc_vs_ref -- --nocapture 2>&1 | grep -E "bit-exact|differs|panicked|error" | sed "s/^\.*//" || true
-    @[ ! -d crates/lc3 ] || cargo test -q --release -p lc3 --test conformance -- --nocapture 2>&1 | grep -E "bit-exact|byte-identical|panicked|error" | sed "s/^\.*//" || true
+    @bash scripts/conform.sh
 
-# Decoder + encoder speed, Rust vs the legacy C (AMR: opencore -O3; LC3: liblc3 as distributions build it, -O3 -ffast-math, and strict), pinned to one core; µs/frame per mode (CRATE=<codec>, default the first present; BENCH=dec|enc; BENCH=all: every codec × side, the "all" lines (before/after a sweep); BENCH=stages: encoder and decoder µs/frame per stage, time attribution; BENCH=kern: ns/call per kernel, KERN=<substring> filters; AB=<ref>: ref vs working tree (B=<ref>: vs that ref; 3 reps per run), BENCH_MODE=<mode>: one mode only (each: per-mode table); with kern: min of 3 + ratio)
+# Decoder + encoder speed, Rust vs the legacy C (AMR: opencore -O3; LC3: liblc3 as distributions build it, -O3 -ffast-math, and strict; Vorbis: encoder only, aoTuV-Lancer, strict aoTuV and xiph's libvorbis), pinned to one core; µs/frame per mode (CRATE=<codec>, default the first present; BENCH=dec|enc; BENCH=all: every codec × side, the "all" lines (before/after a sweep); BENCH=stages: encoder and decoder µs/frame per stage, time attribution; BENCH=kern: ns/call per kernel, KERN=<substring> filters; AB=<ref>: ref vs working tree (B=<ref>: vs that ref; 3 reps per run), BENCH_MODE=<mode>: one mode only (each: per-mode table); with kern: min of 3 + ratio)
 bench: liblc3 lc3plus
     @bash scripts/bench.sh
 
@@ -74,7 +68,7 @@ perf: liblc3 lc3plus
 profile: liblc3 lc3plus
     @bash scripts/profile.sh
 
-# Fuzz (nightly + cargo-fuzz, installed on first use; fuzz/<product>/), each codec vs its C oracle: AMR (nb_*, wb_*) the rfc4867 readers, the decoder and the encoder vs the 3GPP reference C; lc3_decode_vs_c: the LC3 decoder vs liblc3
+# Fuzz (nightly + cargo-fuzz, installed on first use; fuzz/<product>/), each codec vs its C oracle: AMR (nb_*, wb_*) the rfc4867 readers, the decoder and the encoder vs the 3GPP reference C; lc3_decode_vs_c, lc3_encode_vs_c: the LC3 decoder and encoder vs liblc3; lc3_api: any configuration, PCM and bytes, no panic; vorbis_encode_vs_c: the Vorbis encoder vs aoTuV; vorbis_encode_api: any f32 and configuration, no panic, lewton decodes
 [positional-arguments]
 fuzz target="all" seconds="60": liblc3
     @bash scripts/fuzz.sh "$1" "$2"
@@ -87,6 +81,6 @@ lc3-tables: liblc3
 liblc3:
     @bash scripts/liblc3.sh
 
-# Fetch ETSI TS 103 634 V1.7.1 (LC3plus), SHA-verified, and extract its thetest*.wav inputs into .cache/lc3plus/wav (LC3 conformance input only)
+# Fetch ETSI TS 103 634 V1.7.1 (LC3plus), SHA-verified, and extract its thetest*.wav inputs into .cache/lc3plus/wav (test input audio only)
 lc3plus:
     @bash scripts/lc3plus.sh

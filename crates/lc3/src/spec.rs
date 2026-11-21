@@ -4,41 +4,38 @@
 //! zeroed ranges with noise.
 
 use crate::bits::{Bits, Writer};
-use crate::common::{hr, ne};
+use crate::common::{DT_7M5, DT_10M, ne};
 use crate::fastmath::db_q16;
 use crate::tables::{LC3_SPECTRUM_BITS, LC3_SPECTRUM_LOOKUP, LC3_SPECTRUM_MODELS, SPEC_IQ_TABLE};
 
-/// `LC3_SRATE_48K_HR`, `LC3_SRATE_96K_HR`, `LC3_BANDWIDTH_FB`.
-const SRATE_48K_HR: usize = 5;
-const SRATE_96K_HR: usize = 6;
-const BANDWIDTH_FB: usize = 4;
-/// `LC3_DT_7M5`, `LC3_DT_10M`.
-const DT_7M5: usize = 2;
-const DT_10M: usize = 3;
+#[cfg(target_arch = "x86_64")]
+static SPECTRUM_LOWS: [[i16; 16]; 64] = crate::bits::model_lows(&LC3_SPECTRUM_MODELS);
+
+/// `lc3_get_symbol` of spectrum model `m` (by quotient on x86-64: [`Bits::get_symbol_q`]).
+#[inline(always)]
+fn spectrum_symbol(bits: &mut Bits, m: u8) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    return bits.get_symbol_q(
+        &LC3_SPECTRUM_MODELS[usize::from(m)],
+        &SPECTRUM_LOWS[usize::from(m)],
+    );
+    #[cfg(not(target_arch = "x86_64"))]
+    return bits.get_symbol(&LC3_SPECTRUM_MODELS[usize::from(m)]);
+}
 
 /// `lc3_spec_side_t`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SpecSide {
     pub g_idx: i32,
     pub nq: usize,
     pub lsb_mode: bool,
 }
 
-/// `sr_ind` of `resolve_gain_offset` and `resolve_modes`.
-fn sr_ind(sr: usize) -> i32 {
-    if hr(sr) {
-        4 + (sr - SRATE_48K_HR) as i32
-    } else {
-        sr as i32
-    }
-}
-
 /// `resolve_gain_offset`.
 fn resolve_gain_offset(sr: usize, nbytes: i32) -> i32 {
-    let sr_ind = sr_ind(sr);
+    let sr_ind = sr as i32;
     let g_off = (nbytes * 8) / (10 * (1 + sr_ind));
-    let max = if sr >= SRATE_96K_HR { 181 } else { 255 };
-    max.min(105 + 5 * (1 + sr_ind) + g_off.min(115))
+    255.min(105 + 5 * (1 + sr_ind) + g_off.min(115))
 }
 
 /// `unquantize_gain`: 10^(g/28).
@@ -67,9 +64,17 @@ fn unquantize(dt: usize, sr: usize, g_int: i32, x: &mut [f32], nq: usize) -> f32
 
 /// `resolve_modes`: (high-rate mode, LSB mode allowed).
 fn resolve_modes(sr: usize, nbytes: i32) -> (bool, bool) {
-    let sr_ind = sr_ind(sr);
-    let lsb = nbytes >= 20 * (3 + sr_ind) && sr < SRATE_96K_HR;
-    (nbytes > 20 * (1 + sr_ind) && sr < SRATE_96K_HR, lsb)
+    let sr_ind = sr as i32;
+    (nbytes > 20 * (1 + sr_ind), nbytes >= 20 * (3 + sr_ind))
+}
+
+/// The arithmetic coder's context after a pair of magnitude MSBs `a`, `b` and `k` escapes.
+fn next_state(state: u8, a: u32, b: u32, k: usize) -> u8 {
+    (state << 4).wrapping_add(if k > 1 {
+        12 + k as u8
+    } else {
+        (1 + (a + b) * (k as u32 + 1)) as u8
+    })
 }
 
 /// `get_quantized`: the arithmetic-coded values; `None` on an escape overflow.
@@ -93,20 +98,19 @@ fn get_quantized(
     {
         while i < nq.min((ne + 2) >> (1 - h)) {
             let lut = &lut_coeff[usize::from(state)];
-            let max_shl = if hr(sr) { 22 } else { 14 };
             let (mut u, mut v) = (0i32, 0i32);
             let (mut k, mut shl) = (0usize, 0);
-            let mut s = bits.get_symbol(&LC3_SPECTRUM_MODELS[usize::from(lut[k])]);
+            let mut s = spectrum_symbol(bits, lut[k]);
             if lsb_mode && s >= 16 {
                 k += 1;
-                s = bits.get_symbol(&LC3_SPECTRUM_MODELS[usize::from(lut[k])]);
+                s = spectrum_symbol(bits, lut[k]);
                 shl += 1;
             }
-            while s >= 16 && shl < max_shl {
+            while s >= 16 && shl < 14 {
                 u |= (bits.get_bit() as i32) << shl;
                 v |= (bits.get_bit() as i32) << shl;
                 k += usize::from(k < 3);
-                s = bits.get_symbol(&LC3_SPECTRUM_MODELS[usize::from(lut[k])]);
+                s = spectrum_symbol(bits, lut[k]);
                 shl += 1;
             }
             if s >= 16 {
@@ -119,11 +123,7 @@ fn get_quantized(
             x[i + 1] = (if v != 0 && bits.get_bit() != 0 { -v } else { v }) as f32;
             nf_seed = (i32::from(nf_seed) + (u & 0x7fff) * i as i32 + (v & 0x7fff) * (i as i32 + 1))
                 as u16;
-            state = (i32::from(state) << 4).wrapping_add(if k > 1 {
-                12 + k as i32
-            } else {
-                1 + (a + b) * (k as i32 + 1)
-            }) as u8;
+            state = next_state(state, a as u32, b as u32, k);
             i += 2;
         }
     }
@@ -131,29 +131,18 @@ fn get_quantized(
 }
 
 /// `get_residual`: residual quantization bits, one per non-zero value.
-fn get_residual(bits: &mut Bits, mut nbits: i32, hrmode: bool, x: &mut [f32], n: usize) {
-    let (mut xq_off_1, mut xq_off_2) = if hrmode {
-        (0.25f32, 0.25f32)
-    } else {
-        (5.0 / 16.0, 3.0 / 16.0)
-    };
-    let mut iter = 0;
-    while iter < (if hrmode { 20 } else { 1 }) && nbits > 0 {
-        let mut i = 0;
-        while i < n && nbits > 0 {
-            if x[i] != 0.0 {
-                if bits.get_bit() == 0 {
-                    x[i] -= if x[i] < 0.0 { xq_off_1 } else { xq_off_2 };
-                } else {
-                    x[i] += if x[i] > 0.0 { xq_off_1 } else { xq_off_2 };
-                }
-                nbits -= 1;
-            }
-            i += 1;
+fn get_residual(bits: &mut Bits, mut nbits: i32, x: &mut [f32], n: usize) {
+    let (xq_off_1, xq_off_2) = (5.0f32 / 16.0, 3.0f32 / 16.0);
+    for v in x[..n].iter_mut().filter(|v| **v != 0.0) {
+        if nbits <= 0 {
+            break;
         }
-        xq_off_1 *= 0.5;
-        xq_off_2 *= 0.5;
-        iter += 1;
+        if bits.get_bit() == 0 {
+            *v -= if *v < 0.0 { xq_off_1 } else { xq_off_2 };
+        } else {
+            *v += if *v > 0.0 { xq_off_1 } else { xq_off_2 };
+        }
+        nbits -= 1;
     }
 }
 
@@ -187,7 +176,7 @@ fn get_lsb(bits: &mut Bits, mut nbits: i32, x: &mut [f32], nq: usize, nf_seed: &
 
 /// `fill_noise`: noise filling of the zeroed runs, up to the bandwidth.
 fn fill_noise(dt: usize, bw: usize, nf: i32, mut nf_seed: u16, g: f32, x: &mut [f32], nq: usize) {
-    let bw_stop = ne(dt, bw.min(BANDWIDTH_FB));
+    let bw_stop = ne(dt, bw);
     let w = 1 + usize::from(dt >= DT_7M5) + usize::from(dt >= DT_10M);
     let s = g * (8 - nf) as f32 / 16.0;
     let mut z = 0;
@@ -218,8 +207,8 @@ fn get_nbits_nq(dt: usize, sr: usize) -> i32 {
     4 + [32, 64, 128, 256, 512].iter().filter(|&&t| ne > t).count() as i32
 }
 
-/// `lc3_spec_get_side`; `Err` keeps the clamped side as the C does.
-pub(crate) fn get_side(bits: &mut Bits, dt: usize, sr: usize) -> Result<SpecSide, SpecSide> {
+/// `lc3_spec_get_side`; `Err` on a count above `ne`.
+pub(crate) fn get_side(bits: &mut Bits, dt: usize, sr: usize) -> Result<SpecSide, ()> {
     let ne = ne(dt, sr);
     let mut side = SpecSide {
         nq: ((bits.get_bits(get_nbits_nq(dt, sr)) + 1) << 1) as usize,
@@ -227,11 +216,7 @@ pub(crate) fn get_side(bits: &mut Bits, dt: usize, sr: usize) -> Result<SpecSide
     };
     side.lsb_mode = bits.get_bit() != 0;
     side.g_idx = bits.get_bits(8) as i32;
-    if side.nq > ne {
-        side.nq = ne;
-        return Err(side);
-    }
-    Ok(side)
+    if side.nq > ne { Err(()) } else { Ok(side) }
 }
 
 /// `lc3_spec_decode`: the `ne` coefficients into `x`; `Err` on a bitstream error.
@@ -251,7 +236,7 @@ pub(crate) fn decode(
     if lsb_mode {
         get_lsb(bits, nbits_left, x, nq, &mut nf_seed);
     } else {
-        get_residual(bits, nbits_left, hr(sr), x, nq);
+        get_residual(bits, nbits_left, x, nq);
     }
     let g_int = side.g_idx - resolve_gain_offset(sr, nbytes);
     let g = unquantize(dt, sr, g_int, x, nq);
@@ -470,11 +455,7 @@ fn compute_nbits(
                 n_end = i + 2;
                 nbits_end = nbits;
             }
-            state = (state << 4).wrapping_add(if k > 1 {
-                12 + k as u8
-            } else {
-                (1 + (a + b) * (k as u32 + 1)) as u8
-            });
+            state = next_state(state, a, b, k);
             i += 2;
         }
     }
@@ -545,11 +526,7 @@ fn put_quantized(
             b >>= shr;
             bits.put_symbol(&LC3_SPECTRUM_MODELS[lut[k] as usize], (a + 4 * b) as usize);
 
-            state = (state << 4).wrapping_add(if k > 1 {
-                12 + k as u8
-            } else {
-                (1 + (a + b) * (k as u32 + 1)) as u8
-            });
+            state = next_state(state, a, b, k);
             i += 2;
         }
     }
@@ -600,7 +577,7 @@ fn put_lsb(bits: &mut Writer, mut nbits: i32, x: &[f32], n: usize) {
 
 /// `estimate_noise`: the noise level (0 to 7) of the zeroed ranges.
 fn estimate_noise(dt: usize, bw: usize, x: &[f32], n: usize) -> i32 {
-    let bw_stop = ne(dt, bw.min(BANDWIDTH_FB));
+    let bw_stop = ne(dt, bw);
     let w = 1 + usize::from(dt >= DT_7M5) + usize::from(dt >= DT_10M);
     let xq_lim = 10.0f32 / 16.0;
     let mut sum = 0f32;
